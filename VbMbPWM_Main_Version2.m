@@ -137,7 +137,7 @@ for f_c = fc_values
     rms_EVM_org(fc_index) = sqrt(sum(mEVM_org.^2) / length(mEVM_org));
     
     % ========== 根据EVM计算SNR (论文公式25) ==========
-    % SNR(dB) = -5.8 - 20*log10(EVM(%)/100)
+    % SNR(dB) = -5.8 - 20*log10(EVM(%)*0.01)
     rms_SNR_org(fc_index) = -5.8 - 20 * log10(0.01*rms_EVM_org(fc_index));
     % =============================================
     
