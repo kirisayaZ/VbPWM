@@ -1,16 +1,22 @@
-function [out_seq, path_length] = VbMbPWM(s, N, f_c, f_s, lm)
+function [out_seq, path_length] = VbMbPWM(s, N, f_c, f_s, lm, use_sa)
 
 % 
 % 输入参数:
-%   s    - 复数输入样本（基带信号）
-%   N    - 序列长度（输出的比特数）
-%   f_c  - 载波频率 (Hz)
-%   f_s  - 射频采样率 (Hz)
-%   lm   - 维特比算法的记忆长度（通常为2或3）
+%   s      - 复数输入样本（基带信号）
+%   N      - 序列长度（输出的比特数）
+%   f_c    - 载波频率 (Hz)
+%   f_s    - 射频采样率 (Hz)
+%   lm     - 维特比算法的记忆长度（通常为2或3）
+%   use_sa - 是否启用简化模拟退火算法（可选，默认false）
+%            对应论文公式(21)(22)，阈值 t_i^(j) = 1/(2*(j-lm+1))
 %
 % 输出参数:
 %   out_seq     - N比特二进制输出序列
 %   path_length - 最终路径长度（复数残差）
+
+    if nargin < 6
+        use_sa = false;
+    end
 
     % 节点数量 = 2^lm
     num_nodes = 2^lm;
@@ -68,6 +74,12 @@ function [out_seq, path_length] = VbMbPWM(s, N, f_c, f_s, lm)
         new_survival_paths = zeros(num_nodes, N);
         new_path_lengths = complex(zeros(num_nodes, 1));
         
+        % 模拟退火阈值（论文公式22）: t_i^(j) = 1 / (2*(j - lm + 1))
+        % 循环从 iter=lm 开始，分母最小值为 2*(lm-lm+1)=2，不会除零
+        if use_sa
+            sa_threshold = 1 / (2 * (iter - lm + 1));
+        end
+        
         for dest_node = 0:num_nodes-1
             % ===== 源节点计算 =====
             %   
@@ -92,13 +104,36 @@ function [out_seq, path_length] = VbMbPWM(s, N, f_c, f_s, lm)
             len_a = path_lengths(source_a+1) - bit_contribution;
             len_b = path_lengths(source_b+1) - bit_contribution;
             
-            % 选择幅度较小的路径（更接近目标y）
-            if abs(len_a) <= abs(len_b)
-                new_survival_paths(dest_node+1, :) = path_a;
-                new_path_lengths(dest_node+1) = len_a;
+            % 选择生存路径（含模拟退火，论文公式21）
+            % 若 use_sa 且随机数 u < 阈值 t，则以小概率选择次优路径（跳出局部最优）
+            if use_sa
+                u = rand();
+                if abs(len_a) <= abs(len_b)
+                    if u > sa_threshold
+                        new_survival_paths(dest_node+1, :) = path_a;
+                        new_path_lengths(dest_node+1) = len_a;
+                    else
+                        new_survival_paths(dest_node+1, :) = path_b;
+                        new_path_lengths(dest_node+1) = len_b;
+                    end
+                else
+                    if u > sa_threshold
+                        new_survival_paths(dest_node+1, :) = path_b;
+                        new_path_lengths(dest_node+1) = len_b;
+                    else
+                        new_survival_paths(dest_node+1, :) = path_a;
+                        new_path_lengths(dest_node+1) = len_a;
+                    end
+                end
             else
-                new_survival_paths(dest_node+1, :) = path_b;
-                new_path_lengths(dest_node+1) = len_b;
+                % 不使用SA：选择幅度较小的路径（更接近目标y）
+                if abs(len_a) <= abs(len_b)
+                    new_survival_paths(dest_node+1, :) = path_a;
+                    new_path_lengths(dest_node+1) = len_a;
+                else
+                    new_survival_paths(dest_node+1, :) = path_b;
+                    new_path_lengths(dest_node+1) = len_b;
+                end
             end
         end
         
