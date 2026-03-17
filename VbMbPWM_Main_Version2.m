@@ -42,6 +42,19 @@ fc_index = 1;
 % 存储每个载波频率对应的生成序列
 all_sequences = cell(1, length(fc_values));
 
+% ========== 设计接收机抗混叠滤波器 (论文 Section III-B2) ==========
+% 第一级：8阶Chebyshev Type I IIR，16 Gsps → 1 Gsps（抽取因子16）
+decim_factor1 = 16;
+f_IF_rx = f_s / decim_factor1;  % 1 Gsps
+[b_cheby, a_cheby] = cheby1(8, 0.5, 1/decim_factor1);
+
+% 第二级：FIR滤波器，1 Gsps → 250 Msps（抽取因子4）
+% 通带 75 MHz，阻带 100 MHz
+decim_factor2 = 4;
+fir_order = 64;
+fir_coeff = firpm(fir_order, [0, 2*75e6/f_IF_rx, 2*100e6/f_IF_rx, 1], [1, 1, 0, 0]);
+% ================================================================
+
 fprintf('Starting VbPWM ADT Simulation\n');
 fprintf('============================\n');
 
@@ -95,14 +108,21 @@ for f_c = fc_values
     fprintf('  ----------------------------------------\n');
     % ==========================================
     
-    % Receiver processing
-    t_RF = 0:1/f_s:length(RF_bin_org)*1/f_s-1/f_s;
-    rx_carrier = exp(-1i * 2 * pi * f_c * t_RF) / N;
-    rx_RF_sym = (2*RF_bin_org - 1) .* rx_carrier;
+    % ========== 接收机处理 (论文 Section III-B2) ==========
+    t_RF = 0:1/f_s:(length(RF_bin_org)-1)/f_s;
     
-    rx_RF_reshape = reshape(rx_RF_sym, [N, length(rx_RF_sym)/N]);
-    rx_IF_sym = sum(rx_RF_reshape);
+    % 第一步：在RF采样率(16 Gsps)下变频到复数基带
+    rx_BB_RF = (2*RF_bin_org - 1) .* exp(-1i * 2 * pi * f_c * t_RF);
     
+    % 第二步：抗混叠滤波 + 从16 Gsps抽取到1 Gsps (Chebyshev Type I IIR, 8阶)
+    rx_BB_filt1 = filter(b_cheby, a_cheby, rx_BB_RF);
+    rx_IF1 = rx_BB_filt1(1:decim_factor1:end);
+    
+    % 第三步：抗混叠滤波 + 从1 Gsps抽取到250 Msps (FIR, 通带75MHz/阻带100MHz)
+    rx_IF1_filt = filter(fir_coeff, 1, rx_IF1);
+    rx_IF_sym = rx_IF1_filt(1:decim_factor2:end);
+    
+    % 第四步：RRC匹配滤波并下采样到符号率
     rx_INFO_filt = conv(rx_IF_sym, rcos_filt);
     rx_INFO_sym = downsample(rx_INFO_filt(length(rcos_filt):end-length(rcos_filt)+1), IF_interp_factor);
                                                                                   
@@ -116,8 +136,8 @@ for f_c = fc_values
     mEVM_org = abs(conj(INFO_sym)' - rx_INFO_sym_norm) ./ abs(INFO_sym') * 100;
     rms_EVM_org(fc_index) = sqrt(sum(mEVM_org.^2) / length(mEVM_org));
     
-    % ========== 根据EVM计算SNR (公式39) ==========
-    % SNR(dB) = -6.3 - 20*log10(EVM(%))
+    % ========== 根据EVM计算SNR (论文公式25) ==========
+    % SNR(dB) = -5.8 - 20*log10(EVM(%)*0.01)
     rms_SNR_org(fc_index) = -5.8 - 20 * log10(0.01*rms_EVM_org(fc_index));
     % =============================================
     
@@ -196,16 +216,18 @@ fprintf('=====================================================\n');
 % │  每个符号:  s → VbMbPWM() → 64位二进制序列                          │
 % │                                                                     │
 % ├─────────────────────────────────────────────────────────────────────┤
-% │                         接收端处理                                   │
+% │                         接收端处理 (论文 Section III-B2)              │
 % ├─────────────────────────────────────────────────────────────────────┤
 % │                                                                     │
-% │  1. 比特映射: RF_bin → (2*RF_bin - 1)                               │
+% │  1. 比特映射+下变频: (2*RF_bin - 1) * e^(-j*2π*f_c*t) @16Gsps      │
 % │                                                                     │
-% │  2. 下变频: rx_RF_sym = mapped_bits * e^(-j*2π*f_c*t) / N          │
+% │  2. 第一级抽取: 16 Gsps → 1 Gsps (抽取因子16)                      │
+% │     8阶 Chebyshev Type I IIR 抗混叠滤波器                          │
 % │                                                                     │
-% │  3. 积分/求和: reshape为[N, num_symbols], 对每列求和                │
+% │  3. 第二级抽取: 1 Gsps → 250 Msps (抽取因子4)                      │
+% │     FIR 抗混叠滤波器 (通带75MHz, 阻带100MHz)                       │
 % │                                                                     │
-% │  4. 匹配滤波: conv(rx_IF_sym, rcos_filt)                            │
+% │  4. RRC匹配滤波: conv(rx_IF_sym, rcos_filt)                        │
 % │                                                                     │
 % │  5. 下采样: 恢复原始符号率                                          │
 % │                                                                     │
